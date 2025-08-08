@@ -10,7 +10,7 @@ A Discord bot that can apply Roblox Open Cloud game-join restrictions and perfor
 
 ### Requirements
 - Python 3.10+
-- Dependencies in `requirements` (or `requirements.txt`):
+- Dependencies in `requirements.txt`:
   - requests
   - discord.py
   - python-dotenv
@@ -28,7 +28,7 @@ A Discord bot that can apply Roblox Open Cloud game-join restrictions and perfor
    ```
 2. Install dependencies:
    ```bash
-   pip install -r requirements
+   pip install -r requirements.txt
    ```
 3. Run the bot:
    ```bash
@@ -43,7 +43,7 @@ A Discord bot that can apply Roblox Open Cloud game-join restrictions and perfor
    DISCORD_MOD_ROLE_ID=0
    DISCORD_SUPERMOD_ROLE_ID=0
    DISCORD_ADMIN_ROLE_ID=0
-2) Install deps: pip install -r requirements
+2) Install deps: pip install -r requirements.txt
 3) Run: python main.py
 
 ### Project Structure
@@ -56,7 +56,7 @@ neverhome-discord-bot/
 ├─ roblox_service.py       # Roblox API integrations
 ├─ discord_utils.py        # Discord helper utilities
 ├─ commands.py             # Slash command registrations
-├─ requirements            # Python dependencies
+├─ requirements.txt        # Python dependencies
 └─ README.md               # This file
 ```
 
