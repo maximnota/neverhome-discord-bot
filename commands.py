@@ -174,6 +174,18 @@ def register_commands(
 
         try:
             seconds = max(0, min(int(delete_message_seconds), 604800))
+            # Attempt to DM the user prior to the ban so they receive the message
+            try:
+                appeal_url = "https://discord.gg/5PyPkuE4Ak"
+                dm_message = (
+                    f"You have been banned from '{interaction.guild.name}'.\n"
+                    f"Reason: {reason}\n"
+                    f"You can appeal here: {appeal_url}"
+                )
+                await target.send(dm_message)
+            except Exception:
+                # Ignore DM failures (user has DMs closed, blocked bot, etc.)
+                pass
             try:
                 await interaction.guild.ban(
                     target,
@@ -295,6 +307,18 @@ def register_commands(
 
         seconds = max(0, min(int(delete_message_seconds), 604800))
         try:
+            # Attempt to DM the user prior to the ban so they receive the message
+            try:
+                appeal_url = "https://discord.gg/5PyPkuE4Ak"
+                dm_message = (
+                    f"You have been banned from '{interaction.guild.name}' and restricted from the game.\n"
+                    f"Reason: {display_reason}\n"
+                    f"You can appeal here: {appeal_url}"
+                )
+                await member.send(dm_message)
+            except Exception:
+                # Ignore DM failures (user has DMs closed, blocked bot, etc.)
+                pass
             try:
                 await interaction.guild.ban(
                     member,
