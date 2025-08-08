@@ -45,15 +45,6 @@ def register_commands(
             logger.error("Failed to sync slash commands: %s", error)
     _ = on_ready
 
-    @bot.tree.command(name="hello", description="Say hello")
-    async def hello(interaction: discord.Interaction):
-        logger.info("/hello invoked by %s", interaction.user)
-        await interaction.response.send_message(
-            f"Hey {interaction.user.mention}! This is a slash command!",
-            ephemeral=True,
-        )
-    _ = hello
-
     @app_commands.guild_only()
     @bot.tree.command(name="gameban", description="Apply a Cloud v2 game-join restriction (ban) for a Roblox user ID")
     @app_commands.describe(
