@@ -1,1 +1,4 @@
-USE THE ENV CREATED BY ME CALLED NEVERHOME 
+DEPENDENCIES
+requests
+discord.py
+dotenv
