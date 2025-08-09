@@ -1129,14 +1129,3 @@ def register_commands(
             return await interaction.followup.send("Sending the DM failed. Try again shortly.", ephemeral=True)
 
         await interaction.followup.send(f"Invite sent to {target_user.mention}.", ephemeral=True)
-
-    # Optional: custom error for missing permission
-    @joinback.error
-    async def joinback_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-        if isinstance(error, app_commands.errors.MissingPermissions):
-            await interaction.response.send_message(
-                "You need Manage Server permission to use this command.",
-                ephemeral=True
-            )
-        else:
-            await interaction.response.send_message("Something went wrong running that command.", ephemeral=True)
