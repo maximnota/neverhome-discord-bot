@@ -1086,3 +1086,57 @@ def register_commands(
 
     _ = verify_check
 
+
+    @app_commands.describe(
+        user="Pick a user (current member)",
+        user_id="Or paste a user ID/mention (works if they already left)"
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def joinback(
+        interaction: discord.Interaction,
+        user: Optional[discord.User] = None,
+        user_id: Optional[str] = None
+    ):
+        DM_MESSAGE = f"Hey there!👋 \nIt seems that you have been banned before, and your reasoning was accepted.\nHere's the link to join back the server: https://discord.gg/mjAkrqCGp6"
+        await interaction.response.defer(ephemeral=True)
+
+        target_user: Optional[discord.User] = None
+
+        if user is not None:
+            target_user = user
+        elif user_id:
+            uid = sanitize_user_id(user_id)
+            if uid is None:
+                return await interaction.followup.send("Could not parse that user ID or mention.", ephemeral=True)
+            try:
+                target_user = await bot.fetch_user(uid)
+            except discord.NotFound:
+                return await interaction.followup.send("I couldn't find a user with that ID.", ephemeral=True)
+            except discord.HTTPException:
+                return await interaction.followup.send("Fetching that user failed. Try again shortly.", ephemeral=True)
+        else:
+            return await interaction.followup.send("Please provide either a user or a user_id.", ephemeral=True)
+
+        # Try DM
+        try:
+            await target_user.send(DM_MESSAGE)
+        except discord.Forbidden:
+            return await interaction.followup.send(
+                "I couldn't DM that user (DMs closed or no mutual servers).",
+                ephemeral=True
+            )
+        except discord.HTTPException:
+            return await interaction.followup.send("Sending the DM failed. Try again shortly.", ephemeral=True)
+
+        await interaction.followup.send(f"Invite sent to {target_user.mention}.", ephemeral=True)
+
+    # Optional: custom error for missing permission
+    @joinback.error
+    async def joinback_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.errors.MissingPermissions):
+            await interaction.response.send_message(
+                "You need Manage Server permission to use this command.",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message("Something went wrong running that command.", ephemeral=True)
