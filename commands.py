@@ -6,6 +6,7 @@ from typing import List, Dict, Optional, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
+import re
 
 from permissions import has_moderator_role, is_admin
 from roblox_service import resolve_roblox_user_id_by_username, set_user_game_join_restriction
