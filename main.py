@@ -18,6 +18,7 @@ def main() -> None:
 
     logger = configure_logging()
     logger.info("Universe: %s", universe_id)
+    logger.info("Verification Role ID: %s", permissions.verification_role_id)
 
     bot = create_bot()
     register_commands(bot, universe_id=universe_id, api_key=api_key, permissions=permissions)

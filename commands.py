@@ -847,58 +847,21 @@ def register_commands(
 
     _ = banwave
 
-    async def check_user_verification_status(member: discord.Member, verified_role_names: List[str] = None) -> bool:
+    async def check_user_verification_status(member: discord.Member) -> bool:
         """
-        Check if a user appears to be verified with Rover or similar verification system.
+        Check if a user is verified by checking for the configured verification role.
         
         Args:
             member: Discord member to check
-            verified_role_names: List of role names that indicate verification (case-insensitive)
         
         Returns:
-            True if user appears verified, False otherwise
+            True if user has the verification role, False otherwise
         """
-        # Primary check: specific verification role ID
-        VERIFICATION_ROLE_ID = os.getenv("VERIFICATION_ROLE_ID")
+        # Check for the configured verification role ID
+        verification_role_id = permissions.verification_role_id
         member_role_ids = {role.id for role in member.roles}
         
-        if VERIFICATION_ROLE_ID in member_role_ids:
-            return True
-        
-        # Secondary check: custom role names if provided
-        if verified_role_names:
-            # Normalize role names for comparison
-            verified_role_names = [name.lower().strip() for name in verified_role_names]
-            member_role_names = [role.name.lower().strip() for role in member.roles]
-            
-            # Check if user has any verification roles
-            for verified_role in verified_role_names:
-                if any(verified_role in role_name for role_name in member_role_names):
-                    return True
-        
-        # Fallback check: common verification role names (only if no custom roles specified)
-        if not verified_role_names:
-            common_verified_role_names = [
-                "verified", "roblox verified", "rover verified", 
-                "linked", "roblox linked", "authenticated"
-            ]
-            
-            # Normalize role names for comparison
-            common_verified_role_names = [name.lower().strip() for name in common_verified_role_names]
-            member_role_names = [role.name.lower().strip() for role in member.roles]
-            
-            # Check if user has any verification roles
-            for verified_role in common_verified_role_names:
-                if any(verified_role in role_name for role_name in member_role_names):
-                    return True
-            
-            # Check if nickname contains Roblox username pattern (common with Rover)
-            if member.display_name and member.display_name != member.name:
-                # If they have a custom nickname, assume it might be their Roblox username
-                # This is a heuristic - Rover often sets nicknames to Roblox usernames
-                return True
-        
-        return False
+        return verification_role_id in member_role_ids
 
     async def send_verification_dm(member: discord.Member, custom_message: str = None) -> Tuple[bool, str]:
         """
@@ -940,7 +903,6 @@ def register_commands(
     async def process_verification_check(
         guild: discord.Guild, 
         target_members: List[discord.Member] = None,
-        verified_role_names: List[str] = None,
         custom_message: str = None,
         dry_run: bool = False
     ) -> Dict[str, List]:
@@ -950,7 +912,6 @@ def register_commands(
         Args:
             guild: Discord guild to process
             target_members: Specific members to check (None = all members)
-            verified_role_names: Custom verification role names
             custom_message: Custom DM message
             dry_run: If True, don't send DMs, just return who would be messaged
         
@@ -975,7 +936,7 @@ def register_commands(
                 continue
             
             # Check verification status
-            is_verified = await check_user_verification_status(member, verified_role_names)
+            is_verified = await check_user_verification_status(member)
             
             if is_verified:
                 results['verified'].append(member)
@@ -1013,14 +974,12 @@ def register_commands(
     @bot.tree.command(name="verify_check", description="Check verification status and send DMs to unverified users")
     @app_commands.describe(
         target="Specific member to check (leave empty for all members)",
-        verified_roles="Comma-separated list of role names that indicate verification",
         custom_message="Custom message to send (leave empty for default)",
         dry_run="Preview who would be messaged without sending DMs"
     )
     async def verify_check(
         interaction: discord.Interaction,
         target: discord.Member = None,
-        verified_roles: str = None,
         custom_message: str = None,
         dry_run: bool = True,
     ):
@@ -1045,11 +1004,6 @@ def register_commands(
             logger.info("/verify_check denied for %s due to insufficient permissions", interaction.user)
             return
 
-        # Parse verified roles
-        verified_role_names = None
-        if verified_roles:
-            verified_role_names = [role.strip() for role in verified_roles.split(',') if role.strip()]
-
         # Determine target members
         target_members = [target] if target else None
         
@@ -1067,7 +1021,6 @@ def register_commands(
             results = await process_verification_check(
                 guild=interaction.guild,
                 target_members=target_members,
-                verified_role_names=verified_role_names,
                 custom_message=custom_message,
                 dry_run=dry_run
             )
