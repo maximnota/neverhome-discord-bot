@@ -1,5 +1,8 @@
 import logging
 import asyncio
+import csv
+import io
+from typing import List, Dict, Optional, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -363,4 +366,383 @@ def register_commands(
 
     _ = banboth
 
+    async def parse_ban_csv(csv_content: str) -> Tuple[List[Dict[str, str]], List[str]]:
+        """
+        Parse CSV content for ban wave operations.
+        Returns (parsed_entries, errors)
+        
+        Expected CSV columns (case-insensitive, flexible):
+        - username/nickname: The user's nickname
+        - roblox_id (optional): Roblox user ID
+        - discord_id (optional): Discord user ID  
+        - reason: Ban reason
+        - duration (optional): Ban duration in seconds, defaults to -1 (permanent)
+        - exclude_alt_accounts (optional): Whether to exclude alt accounts, defaults to False
+        """
+        entries = []
+        errors = []
+        
+        try:
+            csv_reader = csv.DictReader(io.StringIO(csv_content))
+            
+            # Normalize column names to lowercase for flexible matching
+            if csv_reader.fieldnames:
+                normalized_fieldnames = [name.lower().strip() for name in csv_reader.fieldnames]
+                csv_reader.fieldnames = normalized_fieldnames
+            
+            for row_num, row in enumerate(csv_reader, start=2):  # Start at 2 since row 1 is headers
+                # Normalize row keys
+                normalized_row = {k.lower().strip(): v.strip() if v else "" for k, v in row.items()}
+                
+                # Extract username/nickname
+                username = (normalized_row.get('username') or 
+                           normalized_row.get('nickname') or 
+                           normalized_row.get('name', '')).strip()
+                
+                if not username:
+                    errors.append(f"Row {row_num}: Missing username/nickname")
+                    continue
+                
+                # Extract reason
+                reason = normalized_row.get('reason', '').strip()
+                if not reason:
+                    errors.append(f"Row {row_num}: Missing reason for user '{username}'")
+                    continue
+                
+                # Extract optional fields
+                roblox_id = normalized_row.get('roblox_id', '').strip()
+                discord_id = normalized_row.get('discord_id', '').strip()
+                
+                # Parse duration
+                duration_str = normalized_row.get('duration', '-1').strip()
+                try:
+                    duration = int(duration_str) if duration_str else -1
+                except ValueError:
+                    errors.append(f"Row {row_num}: Invalid duration '{duration_str}' for user '{username}', using permanent")
+                    duration = -1
+                
+                # Parse exclude_alt_accounts
+                exclude_alt_str = normalized_row.get('exclude_alt_accounts', 'false').lower().strip()
+                exclude_alt_accounts = exclude_alt_str in ('true', '1', 'yes', 'y')
+                
+                entries.append({
+                    'username': username,
+                    'roblox_id': roblox_id,
+                    'discord_id': discord_id,
+                    'reason': reason,
+                    'duration': duration,
+                    'exclude_alt_accounts': exclude_alt_accounts,
+                    'row_num': row_num
+                })
+                
+        except Exception as e:
+            errors.append(f"Failed to parse CSV: {str(e)}")
+        
+        return entries, errors
+
+    async def process_ban_wave_entry(
+        entry: Dict[str, str],
+        guild: discord.Guild,
+        universe_id: str,
+        api_key: str,
+        moderator_name: str,
+        ban_type: str = "both"
+    ) -> Dict[str, str]:
+        """
+        Process a single ban wave entry.
+        Returns a result dictionary with status information.
+        """
+        username = entry['username']
+        reason = entry['reason']
+        duration = entry['duration']
+        exclude_alt_accounts = entry['exclude_alt_accounts']
+        row_num = entry['row_num']
+        
+        result = {
+            'username': username,
+            'row_num': row_num,
+            'roblox_success': False,
+            'discord_success': False,
+            'roblox_error': '',
+            'discord_error': '',
+            'roblox_user_id': '',
+            'discord_member': ''
+        }
+        
+        # Process Roblox ban if needed
+        if ban_type in ["roblox", "both"]:
+            try:
+                # Use provided roblox_id or resolve from username
+                roblox_user_id = entry.get('roblox_id')
+                if not roblox_user_id:
+                    roblox_user_id = resolve_roblox_user_id_by_username(username)
+                
+                if not roblox_user_id:
+                    result['roblox_error'] = f"Could not resolve Roblox user ID for '{username}'"
+                else:
+                    result['roblox_user_id'] = str(roblox_user_id)
+                    
+                    status, body = set_user_game_join_restriction(
+                        universe_id=universe_id,
+                        api_key=api_key,
+                        user_id=int(roblox_user_id),
+                        duration_seconds=duration,
+                        display_reason=reason,
+                        private_reason=f"{reason} (via Discord ban wave by {moderator_name})",
+                        exclude_alt_accounts=exclude_alt_accounts,
+                    )
+                    
+                    if 200 <= status < 300:
+                        result['roblox_success'] = True
+                    else:
+                        result['roblox_error'] = f"HTTP {status}: {body}"
+                        
+            except Exception as e:
+                result['roblox_error'] = f"Exception: {str(e)}"
+        
+        # Process Discord ban if needed
+        if ban_type in ["discord", "both"]:
+            try:
+                # Find Discord member
+                member = None
+                
+                # Use provided discord_id if available
+                discord_id = entry.get('discord_id')
+                if discord_id:
+                    try:
+                        member = guild.get_member(int(discord_id))
+                    except (ValueError, TypeError):
+                        pass
+                
+                # Fall back to nickname search
+                if not member:
+                    member = await find_member_by_nickname(guild, username)
+                
+                if not member:
+                    result['discord_error'] = f"Could not find Discord member '{username}'"
+                else:
+                    result['discord_member'] = str(member)
+                    
+                    # Attempt to DM the user first
+                    try:
+                        appeal_url = "https://discord.gg/5PyPkuE4Ak"
+                        dm_message = (
+                            f"You have been banned from '{guild.name}'.\n"
+                            f"Reason: {reason}\n"
+                            f"You can appeal here: {appeal_url}"
+                        )
+                        await member.send(dm_message)
+                    except Exception:
+                        # Ignore DM failures
+                        pass
+                    
+                    # Perform the ban
+                    try:
+                        await guild.ban(
+                            member,
+                            reason=f"{reason} (by {moderator_name} via ban wave)",
+                            delete_message_seconds=0,
+                        )
+                        result['discord_success'] = True
+                    except TypeError:
+                        # Fallback for older discord.py versions
+                        await guild.ban(
+                            member,
+                            reason=f"{reason} (by {moderator_name} via ban wave)",
+                            delete_message_days=0,
+                        )
+                        result['discord_success'] = True
+                        
+            except discord.Forbidden:
+                result['discord_error'] = "Missing permissions to ban member"
+            except Exception as e:
+                result['discord_error'] = f"Exception: {str(e)}"
+        
+        return result
+
+    @app_commands.guild_only()
+    @bot.tree.command(name="banwave", description="Perform a ban wave using a CSV file")
+    @app_commands.describe(
+        csv_file="CSV file with ban information (username, reason, duration, etc.)",
+        ban_type="Type of ban to perform",
+        dry_run="Preview the bans without executing them"
+    )
+    async def banwave(
+        interaction: discord.Interaction,
+        csv_file: discord.Attachment,
+        ban_type: str = "both",
+        dry_run: bool = False,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        logger.info(
+            "/banwave invoked by %s with file=%s ban_type=%s dry_run=%s",
+            interaction.user,
+            csv_file.filename,
+            ban_type,
+            dry_run,
+        )
+
+        # Validate ban_type
+        if ban_type not in ["roblox", "discord", "both"]:
+            await interaction.followup.send(
+                "❌ Invalid ban_type. Must be 'roblox', 'discord', or 'both'.",
+                ephemeral=True,
+            )
+            return
+
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.followup.send("Use this command in a server.", ephemeral=True)
+            return
+
+        # Check permissions
+        if not (is_admin(interaction.user, permissions) or has_moderator_role(interaction.user, permissions)):
+            await interaction.followup.send(
+                "You need Admin or Mod/Supermod permissions to use this command.",
+                ephemeral=True,
+            )
+            logger.info("/banwave denied for %s due to insufficient permissions", interaction.user)
+            return
+
+        # Validate file type and size
+        if not csv_file.filename.lower().endswith('.csv'):
+            await interaction.followup.send(
+                "❌ Please upload a CSV file (.csv extension).",
+                ephemeral=True,
+            )
+            return
+
+        if csv_file.size > 1024 * 1024:  # 1MB limit
+            await interaction.followup.send(
+                "❌ CSV file is too large. Maximum size is 1MB.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            # Download and parse CSV
+            csv_content = (await csv_file.read()).decode('utf-8')
+            entries, parse_errors = await parse_ban_csv(csv_content)
+
+            if parse_errors:
+                error_msg = "❌ CSV parsing errors:\n" + "\n".join(parse_errors[:10])
+                if len(parse_errors) > 10:
+                    error_msg += f"\n... and {len(parse_errors) - 10} more errors"
+                await interaction.followup.send(error_msg, ephemeral=True)
+                return
+
+            if not entries:
+                await interaction.followup.send(
+                    "❌ No valid entries found in CSV file.",
+                    ephemeral=True,
+                )
+                return
+
+            # Show preview
+            preview_msg = f"📋 **Ban Wave Preview** ({'DRY RUN' if dry_run else 'EXECUTION MODE'})\n"
+            preview_msg += f"**File:** {csv_file.filename}\n"
+            preview_msg += f"**Ban Type:** {ban_type}\n"
+            preview_msg += f"**Total Entries:** {len(entries)}\n\n"
+            
+            if len(entries) <= 5:
+                preview_msg += "**Entries:**\n"
+                for entry in entries:
+                    duration_str = "permanent" if entry['duration'] == -1 else f"{entry['duration']}s"
+                    preview_msg += f"• {entry['username']}: {entry['reason']} ({duration_str})\n"
+            else:
+                preview_msg += "**First 5 entries:**\n"
+                for entry in entries[:5]:
+                    duration_str = "permanent" if entry['duration'] == -1 else f"{entry['duration']}s"
+                    preview_msg += f"• {entry['username']}: {entry['reason']} ({duration_str})\n"
+                preview_msg += f"... and {len(entries) - 5} more entries\n"
+
+            await interaction.followup.send(preview_msg, ephemeral=True)
+
+            if dry_run:
+                logger.info("Ban wave dry run completed for %s entries", len(entries))
+                return
+
+            # Execute ban wave
+            await interaction.followup.send(
+                f"🚀 Starting ban wave execution for {len(entries)} entries...",
+                ephemeral=True,
+            )
+
+            successful_bans = []
+            failed_bans = []
+            
+            for i, entry in enumerate(entries):
+                # Send progress update every 10 entries or on last entry
+                if (i + 1) % 10 == 0 or i == len(entries) - 1:
+                    progress_msg = f"⏳ Processing entry {i + 1}/{len(entries)}: {entry['username']}"
+                    await interaction.followup.send(progress_msg, ephemeral=True)
+
+                result = await process_ban_wave_entry(
+                    entry, interaction.guild, universe_id, api_key, 
+                    interaction.user.name, ban_type
+                )
+
+                # Determine overall success
+                if ban_type == "both":
+                    success = result['roblox_success'] and result['discord_success']
+                elif ban_type == "roblox":
+                    success = result['roblox_success']
+                elif ban_type == "discord":
+                    success = result['discord_success']
+
+                if success:
+                    successful_bans.append(result)
+                    logger.info(
+                        "BANWAVE SUCCESS: %s (row %s) - Roblox: %s, Discord: %s",
+                        result['username'],
+                        result['row_num'],
+                        result['roblox_success'],
+                        result['discord_success']
+                    )
+                else:
+                    failed_bans.append(result)
+                    logger.warning(
+                        "BANWAVE FAILURE: %s (row %s) - Roblox error: %s, Discord error: %s",
+                        result['username'],
+                        result['row_num'],
+                        result['roblox_error'],
+                        result['discord_error']
+                    )
+
+                # Small delay to avoid rate limits
+                await asyncio.sleep(0.5)
+
+            # Send final summary
+            summary_msg = f"✅ **Ban Wave Complete**\n"
+            summary_msg += f"**Successful:** {len(successful_bans)}\n"
+            summary_msg += f"**Failed:** {len(failed_bans)}\n"
+
+            if failed_bans:
+                summary_msg += f"\n❌ **Failures:**\n"
+                for failure in failed_bans[:10]:  # Show first 10 failures
+                    errors = []
+                    if failure['roblox_error']:
+                        errors.append(f"Roblox: {failure['roblox_error']}")
+                    if failure['discord_error']:
+                        errors.append(f"Discord: {failure['discord_error']}")
+                    error_text = "; ".join(errors)
+                    summary_msg += f"• Row {failure['row_num']} ({failure['username']}): {error_text}\n"
+                
+                if len(failed_bans) > 10:
+                    summary_msg += f"... and {len(failed_bans) - 10} more failures\n"
+
+            await interaction.followup.send(summary_msg, ephemeral=True)
+
+        except UnicodeDecodeError:
+            await interaction.followup.send(
+                "❌ Could not decode CSV file. Please ensure it's saved as UTF-8.",
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Unexpected error processing ban wave: {str(e)}",
+                ephemeral=True,
+            )
+            logger.error("Ban wave failed with exception: %s", e, exc_info=True)
+
+    _ = banwave
 
