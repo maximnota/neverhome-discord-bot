@@ -847,3 +847,268 @@ def register_commands(
 
     _ = banwave
 
+    async def check_user_verification_status(member: discord.Member, verified_role_names: List[str] = None) -> bool:
+        """
+        Check if a user appears to be verified with Rover or similar verification system.
+        
+        Args:
+            member: Discord member to check
+            verified_role_names: List of role names that indicate verification (case-insensitive)
+        
+        Returns:
+            True if user appears verified, False otherwise
+        """
+        if verified_role_names is None:
+            # Common verification role names
+            verified_role_names = [
+                "verified", "roblox verified", "rover verified", 
+                "linked", "roblox linked", "authenticated"
+            ]
+        
+        # Normalize role names for comparison
+        verified_role_names = [name.lower().strip() for name in verified_role_names]
+        member_role_names = [role.name.lower().strip() for role in member.roles]
+        
+        # Check if user has any verification roles
+        for verified_role in verified_role_names:
+            if any(verified_role in role_name for role_name in member_role_names):
+                return True
+        
+        # Check if nickname contains Roblox username pattern (common with Rover)
+        if member.display_name and member.display_name != member.name:
+            # If they have a custom nickname, assume it might be their Roblox username
+            # This is a heuristic - Rover often sets nicknames to Roblox usernames
+            return True
+        
+        return False
+
+    async def send_verification_dm(member: discord.Member, custom_message: str = None) -> Tuple[bool, str]:
+        """
+        Send a DM to a user asking them to verify with Rover.
+        
+        Args:
+            member: Discord member to send DM to
+            custom_message: Custom verification message (optional)
+        
+        Returns:
+            Tuple of (success: bool, error_message: str)
+        """
+        if custom_message:
+            dm_message = custom_message
+        else:
+            dm_message = (
+                f"🤖 **Verification Required**\n\n"
+                f"Hi {member.display_name}! We noticed you haven't verified your Roblox account yet.\n\n"
+                f"**To verify with Rover:**\n"
+                f"1. Type `/verify` in the server\n"
+                f"2. Follow Rover's instructions to link your Roblox account\n"
+                f"3. This helps us keep the server safe and gives you access to all features!\n\n"
+                f"**Why verify?**\n"
+                f"• Access to all server channels and features\n"
+                f"• Helps prevent impersonation and keeps the community safe\n"
+                f"• Required for participation in events and activities\n\n"
+                f"If you need help, please contact a moderator. Thanks! 🎮"
+            )
+        
+        try:
+            await member.send(dm_message)
+            return True, ""
+        except discord.Forbidden:
+            return False, "User has DMs disabled"
+        except discord.HTTPException as e:
+            return False, f"HTTP error: {str(e)}"
+        except Exception as e:
+            return False, f"Unexpected error: {str(e)}"
+
+    async def process_verification_check(
+        guild: discord.Guild, 
+        target_members: List[discord.Member] = None,
+        verified_role_names: List[str] = None,
+        custom_message: str = None,
+        dry_run: bool = False
+    ) -> Dict[str, List]:
+        """
+        Process verification checks for members and send DMs to unverified users.
+        
+        Args:
+            guild: Discord guild to process
+            target_members: Specific members to check (None = all members)
+            verified_role_names: Custom verification role names
+            custom_message: Custom DM message
+            dry_run: If True, don't send DMs, just return who would be messaged
+        
+        Returns:
+            Dictionary with lists of verified, unverified, dm_sent, dm_failed members
+        """
+        if target_members is None:
+            target_members = guild.members
+        
+        results = {
+            'verified': [],
+            'unverified': [],
+            'dm_sent': [],
+            'dm_failed': [],
+            'bots_skipped': []
+        }
+        
+        for member in target_members:
+            # Skip bots
+            if member.bot:
+                results['bots_skipped'].append(member)
+                continue
+            
+            # Check verification status
+            is_verified = await check_user_verification_status(member, verified_role_names)
+            
+            if is_verified:
+                results['verified'].append(member)
+            else:
+                results['unverified'].append(member)
+                
+                if not dry_run:
+                    # Send verification DM
+                    success, error = await send_verification_dm(member, custom_message)
+                    
+                    if success:
+                        results['dm_sent'].append(member)
+                        logger.info(
+                            "VERIFICATION DM SENT: %s (%s) - %s",
+                            member.display_name,
+                            member.name,
+                            member.id
+                        )
+                    else:
+                        results['dm_failed'].append((member, error))
+                        logger.warning(
+                            "VERIFICATION DM FAILED: %s (%s) - %s - Error: %s",
+                            member.display_name,
+                            member.name,
+                            member.id,
+                            error
+                        )
+                    
+                    # Small delay to avoid rate limits
+                    await asyncio.sleep(0.5)
+        
+        return results
+
+    @app_commands.guild_only()
+    @bot.tree.command(name="verify_check", description="Check verification status and send DMs to unverified users")
+    @app_commands.describe(
+        target="Specific member to check (leave empty for all members)",
+        verified_roles="Comma-separated list of role names that indicate verification",
+        custom_message="Custom message to send (leave empty for default)",
+        dry_run="Preview who would be messaged without sending DMs"
+    )
+    async def verify_check(
+        interaction: discord.Interaction,
+        target: discord.Member = None,
+        verified_roles: str = None,
+        custom_message: str = None,
+        dry_run: bool = True,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        logger.info(
+            "/verify_check invoked by %s - target=%s dry_run=%s",
+            interaction.user,
+            target.display_name if target else "all members",
+            dry_run,
+        )
+
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.followup.send("Use this command in a server.", ephemeral=True)
+            return
+
+        # Check permissions
+        if not (is_admin(interaction.user, permissions) or has_moderator_role(interaction.user, permissions)):
+            await interaction.followup.send(
+                "You need Admin or Mod/Supermod permissions to use this command.",
+                ephemeral=True,
+            )
+            logger.info("/verify_check denied for %s due to insufficient permissions", interaction.user)
+            return
+
+        # Parse verified roles
+        verified_role_names = None
+        if verified_roles:
+            verified_role_names = [role.strip() for role in verified_roles.split(',') if role.strip()]
+
+        # Determine target members
+        target_members = [target] if target else None
+        
+        try:
+            # Show initial status
+            if target:
+                status_msg = f"🔍 Checking verification status for {target.display_name}..."
+            else:
+                member_count = len(interaction.guild.members)
+                status_msg = f"🔍 Checking verification status for {member_count} members..."
+                
+            await interaction.followup.send(status_msg, ephemeral=True)
+
+            # Process verification checks
+            results = await process_verification_check(
+                guild=interaction.guild,
+                target_members=target_members,
+                verified_role_names=verified_role_names,
+                custom_message=custom_message,
+                dry_run=dry_run
+            )
+
+            # Generate summary
+            verified_count = len(results['verified'])
+            unverified_count = len(results['unverified'])
+            dm_sent_count = len(results['dm_sent'])
+            dm_failed_count = len(results['dm_failed'])
+            bots_skipped = len(results['bots_skipped'])
+
+            summary_msg = f"📊 **Verification Check Results** ({'DRY RUN' if dry_run else 'EXECUTION'})\n\n"
+            summary_msg += f"✅ **Verified:** {verified_count}\n"
+            summary_msg += f"❌ **Unverified:** {unverified_count}\n"
+            
+            if not dry_run:
+                summary_msg += f"📨 **DMs Sent:** {dm_sent_count}\n"
+                summary_msg += f"❌ **DM Failures:** {dm_failed_count}\n"
+            
+            summary_msg += f"🤖 **Bots Skipped:** {bots_skipped}\n"
+
+            # Show some examples
+            if results['unverified'] and len(results['unverified']) <= 10:
+                summary_msg += f"\n**Unverified Members:**\n"
+                for member in results['unverified']:
+                    summary_msg += f"• {member.display_name} ({member.name})\n"
+            elif results['unverified']:
+                summary_msg += f"\n**First 10 Unverified Members:**\n"
+                for member in results['unverified'][:10]:
+                    summary_msg += f"• {member.display_name} ({member.name})\n"
+                summary_msg += f"... and {len(results['unverified']) - 10} more\n"
+
+            # Show DM failures if any
+            if results['dm_failed']:
+                summary_msg += f"\n❌ **DM Failures:**\n"
+                for member, error in results['dm_failed'][:5]:
+                    summary_msg += f"• {member.display_name}: {error}\n"
+                if len(results['dm_failed']) > 5:
+                    summary_msg += f"... and {len(results['dm_failed']) - 5} more failures\n"
+
+            await interaction.followup.send(summary_msg, ephemeral=True)
+
+            # Log summary
+            logger.info(
+                "VERIFICATION CHECK COMPLETED by %s - Verified: %s, Unverified: %s, DMs sent: %s, DM failures: %s",
+                interaction.user,
+                verified_count,
+                unverified_count,
+                dm_sent_count,
+                dm_failed_count
+            )
+
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Unexpected error during verification check: {str(e)}",
+                ephemeral=True,
+            )
+            logger.error("Verification check failed with exception: %s", e, exc_info=True)
+
+    _ = verify_check
+
