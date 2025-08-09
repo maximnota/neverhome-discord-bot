@@ -16,10 +16,10 @@ class PermissionsConfig:
     verification_role_id: int
 
 
-def get_config() -> Tuple[str, str, str, PermissionsConfig]:
+def get_config() -> Tuple[str, str, str, PermissionsConfig, int]:
     """Load and validate environment configuration.
 
-    Returns a tuple of (discord_token, roblox_api_key, universe_id, permissions_config).
+    Returns a tuple of (discord_token, roblox_api_key, universe_id, permissions_config, verification_role_id).
     """
     discord_token = os.getenv("DISCORD_TOKEN")
     roblox_api_key = os.getenv("ROBLOX_API_KEY")
@@ -42,6 +42,6 @@ def get_config() -> Tuple[str, str, str, PermissionsConfig]:
         verification_role_id=int(verification_role_id),
     )
 
-    return discord_token, roblox_api_key, universe_id, permissions
+    return discord_token, roblox_api_key, universe_id, permissions, int(verification_role_id)
 
 

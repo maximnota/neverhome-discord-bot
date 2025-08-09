@@ -23,6 +23,7 @@ def register_commands(
     universe_id: str,
     api_key: str,
     permissions: PermissionsConfig,
+    verification_role_id: int,
 ) -> None:
     @bot.event
     async def on_ready():
@@ -847,21 +848,21 @@ def register_commands(
 
     _ = banwave
 
-    async def check_user_verification_status(member: discord.Member) -> bool:
+    async def check_user_verification_status(member: discord.Member, verif_role_id: int) -> bool:
         """
         Check if a user is verified by checking for the configured verification role.
         
         Args:
             member: Discord member to check
+            verif_role_id: The verification role ID to check for
         
         Returns:
             True if user has the verification role, False otherwise
         """
         # Check for the configured verification role ID
-        verification_role_id = permissions.verification_role_id
         member_role_ids = {role.id for role in member.roles}
         
-        return verification_role_id in member_role_ids
+        return verif_role_id in member_role_ids
 
     async def send_verification_dm(member: discord.Member, custom_message: str = None) -> Tuple[bool, str]:
         """
@@ -902,6 +903,7 @@ def register_commands(
 
     async def process_verification_check(
         guild: discord.Guild, 
+        verif_role_id: int,
         target_members: List[discord.Member] = None,
         custom_message: str = None,
         dry_run: bool = False
@@ -911,6 +913,7 @@ def register_commands(
         
         Args:
             guild: Discord guild to process
+            verif_role_id: The verification role ID to check for
             target_members: Specific members to check (None = all members)
             custom_message: Custom DM message
             dry_run: If True, don't send DMs, just return who would be messaged
@@ -936,7 +939,7 @@ def register_commands(
                 continue
             
             # Check verification status
-            is_verified = await check_user_verification_status(member)
+            is_verified = await check_user_verification_status(member, verif_role_id)
             
             if is_verified:
                 results['verified'].append(member)
@@ -1020,6 +1023,7 @@ def register_commands(
             # Process verification checks
             results = await process_verification_check(
                 guild=interaction.guild,
+                verif_role_id=verification_role_id,
                 target_members=target_members,
                 custom_message=custom_message,
                 dry_run=dry_run

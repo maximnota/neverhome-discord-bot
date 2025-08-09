@@ -14,14 +14,14 @@ def create_bot() -> commands.Bot:
 
 
 def main() -> None:
-    token, api_key, universe_id, permissions = get_config()
+    token, api_key, universe_id, permissions, verification_role_id = get_config()
 
     logger = configure_logging()
     logger.info("Universe: %s", universe_id)
-    logger.info("Verification Role ID: %s", permissions.verification_role_id)
+    logger.info("Verification Role ID: %s", verification_role_id)
 
     bot = create_bot()
-    register_commands(bot, universe_id=universe_id, api_key=api_key, permissions=permissions)
+    register_commands(bot, universe_id=universe_id, api_key=api_key, permissions=permissions, verification_role_id=verification_role_id)
     bot.run(token)
 
 
