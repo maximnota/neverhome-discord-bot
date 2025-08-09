@@ -731,6 +731,27 @@ def register_commands(
                 f"🚀 Starting ban wave execution for {len(entries)} entries...",
                 ephemeral=True,
             )
+            
+            # Log ban wave initiation with summary
+            logger.info(
+                "BANWAVE INITIATED by %s - File: %s, Type: %s, Entries: %s",
+                interaction.user,
+                csv_file.filename,
+                ban_type,
+                len(entries)
+            )
+            
+            # Log all entries being processed
+            for entry in entries:
+                duration_str = "permanent" if entry['duration'] == -1 else f"{entry['duration']}s"
+                logger.info(
+                    "BANWAVE QUEUE: Row %s - %s - Reason: **%s** - Duration: %s - Exclude alts: %s",
+                    entry['row_num'],
+                    entry['username'],
+                    entry['reason'],
+                    duration_str,
+                    entry['exclude_alt_accounts']
+                )
 
             successful_bans = []
             failed_bans = []
@@ -757,20 +778,26 @@ def register_commands(
                 if success:
                     successful_bans.append(result)
                     logger.info(
-                        "BANWAVE SUCCESS: %s (row %s) - Roblox: %s, Discord: %s",
+                        "BANWAVE SUCCESS: %s (row %s) - Reason: **%s** - Duration: %s - Roblox: %s (ID: %s), Discord: %s (%s)",
                         result['username'],
                         result['row_num'],
+                        entry['reason'],
+                        "permanent" if entry['duration'] == -1 else f"{entry['duration']}s",
                         result['roblox_success'],
-                        result['discord_success']
+                        result['roblox_user_id'] or "N/A",
+                        result['discord_success'],
+                        result['discord_member'] or "N/A"
                     )
                 else:
                     failed_bans.append(result)
                     logger.warning(
-                        "BANWAVE FAILURE: %s (row %s) - Roblox error: %s, Discord error: %s",
+                        "BANWAVE FAILURE: %s (row %s) - Reason: **%s** - Duration: %s - Roblox error: %s, Discord error: %s",
                         result['username'],
                         result['row_num'],
-                        result['roblox_error'],
-                        result['discord_error']
+                        entry['reason'],
+                        "permanent" if entry['duration'] == -1 else f"{entry['duration']}s",
+                        result['roblox_error'] or "Success",
+                        result['discord_error'] or "Success"
                     )
 
                 # Small delay to avoid rate limits
@@ -796,6 +823,15 @@ def register_commands(
                     summary_msg += f"... and {len(failed_bans) - 10} more failures\n"
 
             await interaction.followup.send(summary_msg, ephemeral=True)
+            
+            # Final summary log
+            logger.info(
+                "BANWAVE COMPLETED by %s - File: %s - Successful: %s, Failed: %s",
+                interaction.user,
+                csv_file.filename,
+                len(successful_bans),
+                len(failed_bans)
+            )
 
         except UnicodeDecodeError:
             await interaction.followup.send(
