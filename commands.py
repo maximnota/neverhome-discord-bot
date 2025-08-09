@@ -858,27 +858,45 @@ def register_commands(
         Returns:
             True if user appears verified, False otherwise
         """
-        if verified_role_names is None:
-            # Common verification role names
-            verified_role_names = [
+        # Primary check: specific verification role ID
+        VERIFICATION_ROLE_ID = os.getenv("VERIFICATION_ROLE_ID")
+        member_role_ids = {role.id for role in member.roles}
+        
+        if VERIFICATION_ROLE_ID in member_role_ids:
+            return True
+        
+        # Secondary check: custom role names if provided
+        if verified_role_names:
+            # Normalize role names for comparison
+            verified_role_names = [name.lower().strip() for name in verified_role_names]
+            member_role_names = [role.name.lower().strip() for role in member.roles]
+            
+            # Check if user has any verification roles
+            for verified_role in verified_role_names:
+                if any(verified_role in role_name for role_name in member_role_names):
+                    return True
+        
+        # Fallback check: common verification role names (only if no custom roles specified)
+        if not verified_role_names:
+            common_verified_role_names = [
                 "verified", "roblox verified", "rover verified", 
                 "linked", "roblox linked", "authenticated"
             ]
-        
-        # Normalize role names for comparison
-        verified_role_names = [name.lower().strip() for name in verified_role_names]
-        member_role_names = [role.name.lower().strip() for role in member.roles]
-        
-        # Check if user has any verification roles
-        for verified_role in verified_role_names:
-            if any(verified_role in role_name for role_name in member_role_names):
+            
+            # Normalize role names for comparison
+            common_verified_role_names = [name.lower().strip() for name in common_verified_role_names]
+            member_role_names = [role.name.lower().strip() for role in member.roles]
+            
+            # Check if user has any verification roles
+            for verified_role in common_verified_role_names:
+                if any(verified_role in role_name for role_name in member_role_names):
+                    return True
+            
+            # Check if nickname contains Roblox username pattern (common with Rover)
+            if member.display_name and member.display_name != member.name:
+                # If they have a custom nickname, assume it might be their Roblox username
+                # This is a heuristic - Rover often sets nicknames to Roblox usernames
                 return True
-        
-        # Check if nickname contains Roblox username pattern (common with Rover)
-        if member.display_name and member.display_name != member.name:
-            # If they have a custom nickname, assume it might be their Roblox username
-            # This is a heuristic - Rover often sets nicknames to Roblox usernames
-            return True
         
         return False
 
