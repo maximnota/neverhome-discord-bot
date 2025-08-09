@@ -1087,6 +1087,7 @@ def register_commands(
     _ = verify_check
 
 
+    @bot.tree.command(name="joinback", description="Make a person join back the guild")
     @app_commands.describe(
         user="Pick a user (current member)",
         user_id="Or paste a user ID/mention (works if they already left)"
