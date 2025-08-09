@@ -371,69 +371,134 @@ def register_commands(
         Parse CSV content for ban wave operations.
         Returns (parsed_entries, errors)
         
-        Expected CSV columns (case-insensitive, flexible):
-        - username/nickname: The user's nickname
-        - roblox_id (optional): Roblox user ID
-        - discord_id (optional): Discord user ID  
-        - reason: Ban reason
-        - duration (optional): Ban duration in seconds, defaults to -1 (permanent)
-        - exclude_alt_accounts (optional): Whether to exclude alt accounts, defaults to False
+        Supports two formats:
+        1. With headers (case-insensitive, flexible):
+           - username/nickname/name: The user's nickname
+           - reason: Ban reason
+           - duration (optional): Ban duration in seconds, defaults to -1 (permanent)
+           - roblox_id (optional): Roblox user ID
+           - discord_id (optional): Discord user ID  
+           - exclude_alt_accounts (optional): Whether to exclude alt accounts, defaults to False
+        
+        2. Without headers (positional):
+           - Column 1: username
+           - Column 2: reason
+           - Column 3: duration (optional, defaults to -1)
+           - Column 4: exclude_alt_accounts (optional, defaults to false)
         """
         entries = []
         errors = []
         
         try:
-            csv_reader = csv.DictReader(io.StringIO(csv_content))
+            lines = csv_content.strip().split('\n')
+            if not lines:
+                errors.append("CSV file is empty")
+                return entries, errors
             
-            # Normalize column names to lowercase for flexible matching
-            if csv_reader.fieldnames:
-                normalized_fieldnames = [name.lower().strip() for name in csv_reader.fieldnames]
-                csv_reader.fieldnames = normalized_fieldnames
+            # Check if first line looks like headers
+            first_line = lines[0].lower()
+            has_headers = any(keyword in first_line for keyword in ['username', 'nickname', 'name', 'reason'])
             
-            for row_num, row in enumerate(csv_reader, start=2):  # Start at 2 since row 1 is headers
-                # Normalize row keys
-                normalized_row = {k.lower().strip(): v.strip() if v else "" for k, v in row.items()}
+            if has_headers:
+                # Parse with headers
+                csv_reader = csv.DictReader(io.StringIO(csv_content))
                 
-                # Extract username/nickname
-                username = (normalized_row.get('username') or 
-                           normalized_row.get('nickname') or 
-                           normalized_row.get('name', '')).strip()
+                # Normalize column names to lowercase for flexible matching
+                if csv_reader.fieldnames:
+                    normalized_fieldnames = [name.lower().strip() for name in csv_reader.fieldnames]
+                    csv_reader.fieldnames = normalized_fieldnames
                 
-                if not username:
-                    errors.append(f"Row {row_num}: Missing username/nickname")
-                    continue
+                for row_num, row in enumerate(csv_reader, start=2):  # Start at 2 since row 1 is headers
+                    # Normalize row keys
+                    normalized_row = {k.lower().strip(): v.strip() if v else "" for k, v in row.items()}
+                    
+                    # Extract username/nickname
+                    username = (normalized_row.get('username') or 
+                               normalized_row.get('nickname') or 
+                               normalized_row.get('name', '')).strip()
+                    
+                    if not username:
+                        errors.append(f"Row {row_num}: Missing username/nickname")
+                        continue
+                    
+                    # Extract reason
+                    reason = normalized_row.get('reason', '').strip()
+                    if not reason:
+                        errors.append(f"Row {row_num}: Missing reason for user '{username}'")
+                        continue
+                    
+                    # Extract optional fields
+                    roblox_id = normalized_row.get('roblox_id', '').strip()
+                    discord_id = normalized_row.get('discord_id', '').strip()
+                    
+                    # Parse duration
+                    duration_str = normalized_row.get('duration', '-1').strip()
+                    try:
+                        duration = int(duration_str) if duration_str else -1
+                    except ValueError:
+                        errors.append(f"Row {row_num}: Invalid duration '{duration_str}' for user '{username}', using permanent")
+                        duration = -1
+                    
+                    # Parse exclude_alt_accounts
+                    exclude_alt_str = normalized_row.get('exclude_alt_accounts', 'false').lower().strip()
+                    exclude_alt_accounts = exclude_alt_str in ('true', '1', 'yes', 'y')
+                    
+                    entries.append({
+                        'username': username,
+                        'roblox_id': roblox_id,
+                        'discord_id': discord_id,
+                        'reason': reason,
+                        'duration': duration,
+                        'exclude_alt_accounts': exclude_alt_accounts,
+                        'row_num': row_num
+                    })
+            else:
+                # Parse without headers (positional)
+                csv_reader = csv.reader(io.StringIO(csv_content))
                 
-                # Extract reason
-                reason = normalized_row.get('reason', '').strip()
-                if not reason:
-                    errors.append(f"Row {row_num}: Missing reason for user '{username}'")
-                    continue
-                
-                # Extract optional fields
-                roblox_id = normalized_row.get('roblox_id', '').strip()
-                discord_id = normalized_row.get('discord_id', '').strip()
-                
-                # Parse duration
-                duration_str = normalized_row.get('duration', '-1').strip()
-                try:
-                    duration = int(duration_str) if duration_str else -1
-                except ValueError:
-                    errors.append(f"Row {row_num}: Invalid duration '{duration_str}' for user '{username}', using permanent")
+                for row_num, row in enumerate(csv_reader, start=1):
+                    if not row or len(row) < 2:
+                        errors.append(f"Row {row_num}: Need at least username and reason")
+                        continue
+                    
+                    # Clean up values
+                    row = [cell.strip() for cell in row]
+                    
+                    username = row[0]
+                    reason = row[1]
+                    
+                    if not username:
+                        errors.append(f"Row {row_num}: Missing username")
+                        continue
+                    
+                    if not reason:
+                        errors.append(f"Row {row_num}: Missing reason for user '{username}'")
+                        continue
+                    
+                    # Parse duration (column 3, optional)
                     duration = -1
-                
-                # Parse exclude_alt_accounts
-                exclude_alt_str = normalized_row.get('exclude_alt_accounts', 'false').lower().strip()
-                exclude_alt_accounts = exclude_alt_str in ('true', '1', 'yes', 'y')
-                
-                entries.append({
-                    'username': username,
-                    'roblox_id': roblox_id,
-                    'discord_id': discord_id,
-                    'reason': reason,
-                    'duration': duration,
-                    'exclude_alt_accounts': exclude_alt_accounts,
-                    'row_num': row_num
-                })
+                    if len(row) > 2 and row[2]:
+                        try:
+                            duration = int(row[2])
+                        except ValueError:
+                            errors.append(f"Row {row_num}: Invalid duration '{row[2]}' for user '{username}', using permanent")
+                            duration = -1
+                    
+                    # Parse exclude_alt_accounts (column 4, optional)
+                    exclude_alt_accounts = False
+                    if len(row) > 3 and row[3]:
+                        exclude_alt_str = row[3].lower().strip()
+                        exclude_alt_accounts = exclude_alt_str in ('true', '1', 'yes', 'y')
+                    
+                    entries.append({
+                        'username': username,
+                        'roblox_id': '',  # Not available in positional format
+                        'discord_id': '',  # Not available in positional format
+                        'reason': reason,
+                        'duration': duration,
+                        'exclude_alt_accounts': exclude_alt_accounts,
+                        'row_num': row_num
+                    })
                 
         except Exception as e:
             errors.append(f"Failed to parse CSV: {str(e)}")
