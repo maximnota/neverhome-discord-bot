@@ -16,6 +16,14 @@ from logging_config import bind_discord_log_channel
 
 logger = logging.getLogger("neverhome-bot")
 
+def sanitize_user_id(s: str) -> Optional[int]:
+    s = s.strip()
+    s = re.sub(r"[<@!>]", "", s)
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
 
 def register_commands(
     bot: commands.Bot,
