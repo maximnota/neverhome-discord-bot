@@ -5,7 +5,7 @@ from config import get_config
 from logging_config import configure_logging
 from commands import register_commands
 
-
+#fake comment to restart the discord bot
 def create_bot() -> commands.Bot:
     intents = discord.Intents.default()
     intents.guilds = True
