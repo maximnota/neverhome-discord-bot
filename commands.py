@@ -13,6 +13,7 @@ from roblox_service import resolve_roblox_user_id_by_username, set_user_game_joi
 from discord_utils import find_member_by_nickname
 from config import PermissionsConfig
 from logging_config import bind_discord_log_channel
+from database import get_guild_credentials, log_ban
 
 
 logger = logging.getLogger("neverhome-bot")
@@ -29,8 +30,8 @@ def sanitize_user_id(s: str) -> Optional[int]:
 def register_commands(
     bot: commands.Bot,
     *,
-    universe_id: str,
-    api_key: str,
+    universe_id: Optional[str],
+    api_key: Optional[str],
     permissions: PermissionsConfig,
     verification_role_id: int,
 ) -> None:
@@ -104,9 +105,26 @@ def register_commands(
             logger.info("/gameban denied for %s due to insufficient permissions", interaction.user)
             return
 
+        # Credential Resolution
+        creds = await get_guild_credentials(str(interaction.guild.id))
+        if creds:
+            owner_id, effective_api_key, effective_universe_id = creds
+        else:
+            # Fallback to global config if available
+            if universe_id and api_key:
+                effective_universe_id = universe_id
+                effective_api_key = api_key
+                owner_id = None # Global fallback owner unknown
+            else:
+                 await interaction.followup.send(
+                    "❌ This server is not authorized to use the bot (no configuration found).",
+                    ephemeral=True
+                )
+                 return
+
         status, body = set_user_game_join_restriction(
-            universe_id=universe_id,
-            api_key=api_key,
+            universe_id=effective_universe_id,
+            api_key=effective_api_key,
             user_id=roblox_user_id,
             duration_seconds=duration,
             display_reason=display_reason,
@@ -126,6 +144,16 @@ def register_commands(
                 display_reason,
                 private_reason,
             )
+            # Log to DB if we have an owner_id context (meaning we are running under DB config)
+            if owner_id:
+                asyncio.create_task(log_ban(
+                    owner_id=owner_id,
+                    universe_id=effective_universe_id,
+                    roblox_user_id=str(roblox_user_id),
+                    reason=display_reason,
+                    moderator_id=str(interaction.user.id)
+                ))
+
         else:
             await interaction.followup.send(
                 f"❌ Restriction failed (HTTP {status}). Details: {body}",
@@ -285,9 +313,26 @@ def register_commands(
             )
             return
 
+        # Credential Resolution
+        creds = await get_guild_credentials(str(interaction.guild.id))
+        if creds:
+            owner_id, effective_api_key, effective_universe_id = creds
+        else:
+            # Fallback to global config if available
+            if universe_id and api_key:
+                effective_universe_id = universe_id
+                effective_api_key = api_key
+                owner_id = None
+            else:
+                 await interaction.followup.send(
+                    "❌ This server is not authorized to use the bot (no configuration found).",
+                    ephemeral=True
+                )
+                 return
+        
         status, body = set_user_game_join_restriction(
-            universe_id=universe_id,
-            api_key=api_key,
+            universe_id=effective_universe_id,
+            api_key=effective_api_key,
             user_id=roblox_user_id,
             duration_seconds=duration,
             display_reason=display_reason,
@@ -359,6 +404,16 @@ def register_commands(
                 error,
             )
             return
+
+        # Log successful ban to DB
+        if owner_id:
+            asyncio.create_task(log_ban(
+                owner_id=owner_id,
+                universe_id=effective_universe_id,
+                roblox_user_id=str(roblox_user_id),
+                reason=display_reason,
+                moderator_id=str(interaction.user.id)
+            ))
 
         await interaction.followup.send(
             f"✅ Banned '{nickname}' on Roblox (userId {roblox_user_id}) and Discord.",
@@ -520,7 +575,9 @@ def register_commands(
         guild: discord.Guild,
         universe_id: str,
         api_key: str,
+        owner_id: Optional[str],
         moderator_name: str,
+        moderator_id: str,
         ban_type: str = "both"
     ) -> Dict[str, str]:
         """
@@ -569,6 +626,14 @@ def register_commands(
                     
                     if 200 <= status < 300:
                         result['roblox_success'] = True
+                        if owner_id:
+                             asyncio.create_task(log_ban(
+                                owner_id=owner_id,
+                                universe_id=universe_id,
+                                roblox_user_id=str(roblox_user_id),
+                                reason=reason,
+                                moderator_id=moderator_id
+                            ))
                     else:
                         result['roblox_error'] = f"HTTP {status}: {body}"
                         
@@ -693,6 +758,27 @@ def register_commands(
             )
             return
 
+        # Credential Resolution
+        creds = await get_guild_credentials(str(interaction.guild.id))
+        effective_universe_id = None
+        effective_api_key = None
+        owner_id = None
+
+        if creds:
+            owner_id, effective_api_key, effective_universe_id = creds
+        else:
+            # Fallback to global config if available
+            if universe_id and api_key:
+                effective_universe_id = universe_id
+                effective_api_key = api_key
+                owner_id = None
+            else:
+                 await interaction.followup.send(
+                    "❌ This server is not authorized to use the bot (no configuration found).",
+                    ephemeral=True
+                )
+                 return
+
         try:
             # Download and parse CSV
             csv_content = (await csv_file.read()).decode('utf-8')
@@ -773,8 +859,8 @@ def register_commands(
                     await interaction.followup.send(progress_msg, ephemeral=True)
 
                 result = await process_ban_wave_entry(
-                    entry, interaction.guild, universe_id, api_key, 
-                    interaction.user.name, ban_type
+                    entry, interaction.guild, effective_universe_id, effective_api_key, 
+                    owner_id, interaction.user.name, str(interaction.user.id), ban_type
                 )
 
                 # Determine overall success
@@ -857,243 +943,7 @@ def register_commands(
 
     _ = banwave
 
-    async def check_user_verification_status(member: discord.Member, verif_role_id: int) -> bool:
-        """
-        Check if a user is verified by checking for the configured verification role.
-        
-        Args:
-            member: Discord member to check
-            verif_role_id: The verification role ID to check for
-        
-        Returns:
-            True if user has the verification role, False otherwise
-        """
-        # Check for the configured verification role ID
-        member_role_ids = {role.id for role in member.roles}
-        
-        return verif_role_id in member_role_ids
 
-    async def send_verification_dm(member: discord.Member, custom_message: str = None) -> Tuple[bool, str]:
-        """
-        Send a DM to a user asking them to verify with Rover.
-        
-        Args:
-            member: Discord member to send DM to
-            custom_message: Custom verification message (optional)
-        
-        Returns:
-            Tuple of (success: bool, error_message: str)
-        """
-        if custom_message:
-            dm_message = custom_message
-        else:
-            dm_message = (
-                f"🤖 **Verification Required**\n\n"
-                f"Hi {member.display_name}! We noticed you haven't verified your Roblox account yet.\n\n"
-                f"**To verify with Rover:**\n"
-                f"Use Rover's verify button to verify and follow the instructions.\n"
-                f"This helps us keep the server safe and gives you access to all features!\n\n"
-                f"**Why verify?**\n"
-                f"• Access to all server channels and features\n"
-                f"• Helps prevent impersonation and keeps the community safe\n"
-                f"• Required for participation in events and activities\n\n"
-                f"If you need help, please contact a moderator. Thanks! 🎮"
-            )
-        
-        try:
-            await member.send(dm_message)
-            return True, ""
-        except discord.Forbidden:
-            return False, "User has DMs disabled"
-        except discord.HTTPException as e:
-            return False, f"HTTP error: {str(e)}"
-        except Exception as e:
-            return False, f"Unexpected error: {str(e)}"
-
-    async def process_verification_check(
-        guild: discord.Guild, 
-        verif_role_id: int,
-        target_members: List[discord.Member] = None,
-        custom_message: str = None,
-        dry_run: bool = False
-    ) -> Dict[str, List]:
-        """
-        Process verification checks for members and send DMs to unverified users.
-        
-        Args:
-            guild: Discord guild to process
-            verif_role_id: The verification role ID to check for
-            target_members: Specific members to check (None = all members)
-            custom_message: Custom DM message
-            dry_run: If True, don't send DMs, just return who would be messaged
-        
-        Returns:
-            Dictionary with lists of verified, unverified, dm_sent, dm_failed members
-        """
-        if target_members is None:
-            target_members = guild.members
-        
-        results = {
-            'verified': [],
-            'unverified': [],
-            'dm_sent': [],
-            'dm_failed': [],
-            'bots_skipped': []
-        }
-        
-        for member in target_members:
-            # Skip bots
-            if member.bot:
-                results['bots_skipped'].append(member)
-                continue
-            
-            # Check verification status
-            is_verified = await check_user_verification_status(member, verif_role_id)
-            
-            if is_verified:
-                results['verified'].append(member)
-            else:
-                results['unverified'].append(member)
-                
-                if not dry_run:
-                    # Send verification DM
-                    success, error = await send_verification_dm(member, custom_message)
-                    
-                    if success:
-                        results['dm_sent'].append(member)
-                        logger.info(
-                            "VERIFICATION DM SENT: %s (%s) - %s",
-                            member.display_name,
-                            member.name,
-                            member.id
-                        )
-                    else:
-                        results['dm_failed'].append((member, error))
-                        logger.warning(
-                            "VERIFICATION DM FAILED: %s (%s) - %s - Error: %s",
-                            member.display_name,
-                            member.name,
-                            member.id,
-                            error
-                        )
-                    
-                    # Small delay to avoid rate limits
-                    await asyncio.sleep(0.5)
-        
-        return results
-
-    @app_commands.guild_only()
-    @bot.tree.command(name="verify_check", description="Check verification status and send DMs to unverified users")
-    @app_commands.describe(
-        target="Specific member to check (leave empty for all members)",
-        custom_message="Custom message to send (leave empty for default)",
-        dry_run="Preview who would be messaged without sending DMs"
-    )
-    async def verify_check(
-        interaction: discord.Interaction,
-        target: discord.Member = None,
-        custom_message: str = None,
-        dry_run: bool = True,
-    ):
-        await interaction.response.defer(ephemeral=True)
-        logger.info(
-            "/verify_check invoked by %s - target=%s dry_run=%s",
-            interaction.user,
-            target.display_name if target else "all members",
-            dry_run,
-        )
-
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            await interaction.followup.send("Use this command in a server.", ephemeral=True)
-            return
-
-        # Check permissions
-        if not (is_admin(interaction.user, permissions) or has_moderator_role(interaction.user, permissions)):
-            await interaction.followup.send(
-                "You need Admin or Mod/Supermod permissions to use this command.",
-                ephemeral=True,
-            )
-            logger.info("/verify_check denied for %s due to insufficient permissions", interaction.user)
-            return
-
-        # Determine target members
-        target_members = [target] if target else None
-        
-        try:
-            # Show initial status
-            if target:
-                status_msg = f"🔍 Checking verification status for {target.display_name}..."
-            else:
-                member_count = len(interaction.guild.members)
-                status_msg = f"🔍 Checking verification status for {member_count} members..."
-                
-            await interaction.followup.send(status_msg, ephemeral=True)
-
-            # Process verification checks
-            results = await process_verification_check(
-                guild=interaction.guild,
-                verif_role_id=verification_role_id,
-                target_members=target_members,
-                custom_message=custom_message,
-                dry_run=dry_run
-            )
-
-            # Generate summary
-            verified_count = len(results['verified'])
-            unverified_count = len(results['unverified'])
-            dm_sent_count = len(results['dm_sent'])
-            dm_failed_count = len(results['dm_failed'])
-            bots_skipped = len(results['bots_skipped'])
-
-            summary_msg = f"📊 **Verification Check Results** ({'DRY RUN' if dry_run else 'EXECUTION'})\n\n"
-            summary_msg += f"✅ **Verified:** {verified_count}\n"
-            summary_msg += f"❌ **Unverified:** {unverified_count}\n"
-            
-            if not dry_run:
-                summary_msg += f"📨 **DMs Sent:** {dm_sent_count}\n"
-                summary_msg += f"❌ **DM Failures:** {dm_failed_count}\n"
-            
-            summary_msg += f"🤖 **Bots Skipped:** {bots_skipped}\n"
-
-            # Show some examples
-            if results['unverified'] and len(results['unverified']) <= 10:
-                summary_msg += f"\n**Unverified Members:**\n"
-                for member in results['unverified']:
-                    summary_msg += f"• {member.display_name} ({member.name})\n"
-            elif results['unverified']:
-                summary_msg += f"\n**First 10 Unverified Members:**\n"
-                for member in results['unverified'][:10]:
-                    summary_msg += f"• {member.display_name} ({member.name})\n"
-                summary_msg += f"... and {len(results['unverified']) - 10} more\n"
-
-            # Show DM failures if any
-            if results['dm_failed']:
-                summary_msg += f"\n❌ **DM Failures:**\n"
-                for member, error in results['dm_failed'][:5]:
-                    summary_msg += f"• {member.display_name}: {error}\n"
-                if len(results['dm_failed']) > 5:
-                    summary_msg += f"... and {len(results['dm_failed']) - 5} more failures\n"
-
-            await interaction.followup.send(summary_msg, ephemeral=True)
-
-            # Log summary
-            logger.info(
-                "VERIFICATION CHECK COMPLETED by %s - Verified: %s, Unverified: %s, DMs sent: %s, DM failures: %s",
-                interaction.user,
-                verified_count,
-                unverified_count,
-                dm_sent_count,
-                dm_failed_count
-            )
-
-        except Exception as e:
-            await interaction.followup.send(
-                f"❌ Unexpected error during verification check: {str(e)}",
-                ephemeral=True,
-            )
-            logger.error("Verification check failed with exception: %s", e, exc_info=True)
-
-    _ = verify_check
 
     @app_commands.guild_only()
     @bot.tree.command(name="joinback", description="Make a person join back the guild")
