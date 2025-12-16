@@ -34,54 +34,55 @@ def register_commands(
     api_key: Optional[str],
     permissions: PermissionsConfig,
 ) -> None:
+    async def setup_log_channel(guild: discord.Guild):
+        """Finds or creates the log channel for a guild and binds it."""
+        log_channel = None
+        found = False
+        # Search for existing
+        for channel in guild.text_channels:
+            if channel.name.lower() == "blox-ban-logs":
+                log_channel = channel
+                found = True
+                break
+        
+        # Create if not found
+        if not found:
+            try:
+                overwrites = {
+                    guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                    guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                }
+                log_channel = await guild.create_text_channel("blox-ban-logs", overwrites=overwrites, reason="Auto-created for bot logs")
+                logger.info("Created #blox-ban-logs in guild '%s'", guild.name, extra={'guild_id': guild.id})
+            except discord.Forbidden:
+                logger.warning("Missing permissions to create #blox-ban-logs in guild '%s'", guild.name, extra={'guild_id': guild.id})
+            except Exception as e:
+                logger.error("Failed to auto-create #blox-ban-logs in guild '%s': %s", guild.name, e, extra={'guild_id': guild.id})
+
+        if log_channel:
+            bind_discord_log_channel(guild.id, log_channel, asyncio.get_running_loop())
+            logger.info("Logging bound to #%s in guild '%s'", log_channel.name, guild.name, extra={'guild_id': guild.id})
+        else:
+             logger.warning("No log channel available for guild '%s'", guild.name, extra={'guild_id': guild.id})
+
     @bot.event
     async def on_ready():
         try:
             await bot.tree.sync()
             logger.info("Logged in as %s | Slash commands synced.", bot.user)
-            # Bind the Discord logging channel named "blox-ban-logs" across joined guilds
-            log_channel = None
+            
             for guild in bot.guilds:
-                # Prefer text channel named exactly "blox-ban-logs"
-                found = False
-                for channel in guild.text_channels:
-                    if channel.name.lower() == "blox-ban-logs":
-                        log_channel = channel
-                        found = True
-                        break
+                await setup_log_channel(guild)
                 
-                if not found:
-                    try:
-                        # Create the channel if it doesn't exist
-                        # Note: This might fail if bot lacks permissions, we catch that below
-                        overwrites = {
-                            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
-                        }
-                        log_channel = await guild.create_text_channel("blox-ban-logs", overwrites=overwrites, reason="Auto-created for bot logs")
-                        logger.info("Created #blox-ban-logs in guild '%s'", guild.name)
-                        # We only strictly support binding to one channel in the current logging_config implementation
-                        # (it binds a single channel). If the bot is in multiple guilds, this logic picks the *last* one it processes
-                        # effectively. The original code did `if log_channel: break`, picking the *first* one.
-                        # I will stick to picking the FIRST one found or created to match original behavior,
-                        # although the original behavior of "logging bound to #logs in guild..." implies a singleton logger.
-                        break 
-                    except discord.Forbidden:
-                        logger.warning("Missing permissions to create #blox-ban-logs in guild '%s'", guild.name)
-                    except Exception as e:
-                        logger.error("Failed to auto-create #blox-ban-logs in guild '%s': %s", guild.name, e)
-
-                if log_channel:
-                    break
-
-            if log_channel is not None:
-                bind_discord_log_channel(log_channel, asyncio.get_running_loop())
-                logger.info("Logging bound to #%s in guild '%s'", log_channel.name, log_channel.guild.name)
-            else:
-                logger.warning("Could not find or create 'blox-ban-logs'. Logs will not be sent to Discord.")
         except Exception as error:
             logger.error("Failed to sync slash commands: %s", error)
     _ = on_ready
+
+    @bot.event
+    async def on_guild_join(guild: discord.Guild):
+        logger.info("Joined new guild: %s", guild.name)
+        await setup_log_channel(guild)
+    _ = on_guild_join
 
     @app_commands.guild_only()
     @bot.tree.command(name="gameban", description="Apply a Cloud v2 game-join restriction (ban) for a Roblox user ID")
@@ -167,6 +168,7 @@ def register_commands(
                 roblox_user_id,
                 display_reason,
                 private_reason,
+                extra={'guild_id': interaction.guild.id}
             )
             # Log to DB if we have an owner_id context (meaning we are running under DB config)
             if owner_id:
@@ -188,6 +190,7 @@ def register_commands(
                 roblox_user_id,
                 status,
                 body,
+                extra={'guild_id': interaction.guild.id}
             )
 
     _ = gameban
@@ -264,13 +267,14 @@ def register_commands(
                 target.display_name,
                 target,
                 reason,
+                extra={'guild_id': interaction.guild.id}
             )
         except discord.Forbidden:
             await interaction.followup.send("I don't have permission to ban that member.", ephemeral=True)
-            logger.warning("Failed to ban %s: missing permissions", target)
+            logger.warning("Failed to ban %s: missing permissions", target, extra={'guild_id': interaction.guild.id})
         except Exception as error:
             await interaction.followup.send(f"❌ Failed to ban member: {error}", ephemeral=True)
-            logger.error("Failed to ban %s: %s", target, error)
+            logger.error("Failed to ban %s: %s", target, error, extra={'guild_id': interaction.guild.id})
 
     _ = discordban
 
@@ -414,6 +418,7 @@ def register_commands(
                 "BLOCKED (Roblox) nickname=%s userId=%s; Discord ban failed: missing permissions",
                 nickname,
                 roblox_user_id,
+                extra={'guild_id': interaction.guild.id}
             )
             return
         except Exception as error:
@@ -426,6 +431,7 @@ def register_commands(
                 nickname,
                 roblox_user_id,
                 error,
+                extra={'guild_id': interaction.guild.id}
             )
             return
 
@@ -451,6 +457,7 @@ def register_commands(
             display_reason,
             private_reason,
             interaction.user,
+            extra={'guild_id': interaction.guild.id}
         )
 
     _ = banboth
