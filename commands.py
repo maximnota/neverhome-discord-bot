@@ -33,19 +33,18 @@ def register_commands(
     universe_id: Optional[str],
     api_key: Optional[str],
     permissions: PermissionsConfig,
-    verification_role_id: int,
 ) -> None:
     @bot.event
     async def on_ready():
         try:
             await bot.tree.sync()
             logger.info("Logged in as %s | Slash commands synced.", bot.user)
-            # Bind the Discord logging channel named "logs" across joined guilds
+            # Bind the Discord logging channel named "blox-ban-logs" across joined guilds
             log_channel = None
             for guild in bot.guilds:
-                # Prefer text channel named exactly "logs"
+                # Prefer text channel named exactly "blox-ban-logs"
                 for channel in guild.text_channels:
-                    if channel.name.lower() == "logs":
+                    if channel.name.lower() == "blox-ban-logs":
                         log_channel = channel
                         break
                 if log_channel:
@@ -54,7 +53,7 @@ def register_commands(
                 bind_discord_log_channel(log_channel, asyncio.get_running_loop())
                 logger.info("Logging bound to #%s in guild '%s'", log_channel.name, log_channel.guild.name)
             else:
-                logger.warning("No channel named 'logs' found in any connected guilds.")
+                logger.warning("No channel named 'blox-ban-logs' found. Logs will not be sent to Discord.")
         except Exception as error:
             logger.error("Failed to sync slash commands: %s", error)
     _ = on_ready
