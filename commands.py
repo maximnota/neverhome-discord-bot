@@ -43,17 +43,42 @@ def register_commands(
             log_channel = None
             for guild in bot.guilds:
                 # Prefer text channel named exactly "blox-ban-logs"
+                found = False
                 for channel in guild.text_channels:
                     if channel.name.lower() == "blox-ban-logs":
                         log_channel = channel
+                        found = True
                         break
+                
+                if not found:
+                    try:
+                        # Create the channel if it doesn't exist
+                        # Note: This might fail if bot lacks permissions, we catch that below
+                        overwrites = {
+                            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                        }
+                        log_channel = await guild.create_text_channel("blox-ban-logs", overwrites=overwrites, reason="Auto-created for bot logs")
+                        logger.info("Created #blox-ban-logs in guild '%s'", guild.name)
+                        # We only strictly support binding to one channel in the current logging_config implementation
+                        # (it binds a single channel). If the bot is in multiple guilds, this logic picks the *last* one it processes
+                        # effectively. The original code did `if log_channel: break`, picking the *first* one.
+                        # I will stick to picking the FIRST one found or created to match original behavior,
+                        # although the original behavior of "logging bound to #logs in guild..." implies a singleton logger.
+                        break 
+                    except discord.Forbidden:
+                        logger.warning("Missing permissions to create #blox-ban-logs in guild '%s'", guild.name)
+                    except Exception as e:
+                        logger.error("Failed to auto-create #blox-ban-logs in guild '%s': %s", guild.name, e)
+
                 if log_channel:
                     break
+
             if log_channel is not None:
                 bind_discord_log_channel(log_channel, asyncio.get_running_loop())
                 logger.info("Logging bound to #%s in guild '%s'", log_channel.name, log_channel.guild.name)
             else:
-                logger.warning("No channel named 'blox-ban-logs' found. Logs will not be sent to Discord.")
+                logger.warning("Could not find or create 'blox-ban-logs'. Logs will not be sent to Discord.")
         except Exception as error:
             logger.error("Failed to sync slash commands: %s", error)
     _ = on_ready
